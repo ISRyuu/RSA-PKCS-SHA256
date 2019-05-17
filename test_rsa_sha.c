@@ -165,7 +165,11 @@ main()
     unsigned char *sig = NULL;
     EVP_PKEY *skey = NULL;
     RSA *rsa = createRSA((unsigned char*)key_str, 0);
-    
+
+    if (!rsa) {
+        exit(1);
+    }
+
     if (make_key(&skey, rsa) != 0) {
         exit(1);
     }
