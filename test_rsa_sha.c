@@ -182,8 +182,16 @@ main()
         printf("%02x", sig[i]);
     }
     printf("\n");
+
+    if (sig) {
+        OPENSSL_free(sig);
+    }
     
-    if(rsa) {
+    if (skey) {
+        EVP_PKEY_free(skey);
+    }
+     
+    if (rsa) {
         RSA_free(rsa);
         rsa = NULL;
     }
