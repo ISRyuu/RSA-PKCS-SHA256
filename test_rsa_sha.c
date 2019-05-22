@@ -4,12 +4,10 @@
 #include <openssl/err.h>
 #include <openssl/rand.h>
 #include <openssl/pem.h>
-#include <assert.h>
-
 #include <string.h>
 
 
-const char* key_str = "-----BEGIN RSA PRIVATE KEY-----\n"\
+unsigned char* key_str = "-----BEGIN RSA PRIVATE KEY-----\n"\
 "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCHJJ1kxhOXDh4M\n"\
 "9QgXj2sXahxG7clGnWDp5YW9f/+Xyf2RzZma1JB76KqXh2ZNyJfpG/4tsUqm1KBQ\n"\
 "3w1glvsvUsCcuiAhVmT3CkN7+M/S+ttcXIlNfT+x2UH4h50d1IPLr7qSjgiBkPcW\n"\
@@ -57,131 +55,143 @@ createRSA(const unsigned char * key, int public)
     if(rsa == NULL) {
         printf( "Failed to create RSA");
     }
- 
+    
+    BIO_free(keybio);
     return rsa;
 }
 
-int
-make_key(EVP_PKEY** skey, RSA *rsa)
+EVP_PKEY*
+make_key(RSA *rsa)
 {
-    int result = -1;
-    
-    if (!skey) {
-        return -1;
-    }
-    
-    if (*skey != NULL) {
-        EVP_PKEY_free(*skey);
-        *skey = NULL;
-    }
+    EVP_PKEY *pkey = NULL;
 
     if (!rsa) {
-        return -1;
+        return pkey;
     }
     
-    do
-    {
-        *skey = EVP_PKEY_new();
-        if(*skey == NULL) {
+    do {
+        pkey = EVP_PKEY_new();
+        if (pkey == NULL) {
             printf("EVP_PKEY_new failed (1), error 0x%lx\n", ERR_get_error());
             break; /* failed */
         }
         
-        if(rsa == NULL) {
+        if (rsa == NULL) {
             printf("RSA_generate_key failed, error 0x%lx\n", ERR_get_error());
             break; /* failed */
         }
         
-        int rc = EVP_PKEY_assign_RSA(*skey, RSAPrivateKey_dup(rsa));        
-        if(rc != 1) {
+        int rc = EVP_PKEY_assign_RSA(pkey, RSAPrivateKey_dup(rsa));
+        if (rc != 1) {
             printf("EVP_PKEY_assign_RSA (1) failed, error 0x%lx\n", ERR_get_error());
             break; /* failed */
         }
-        result = 0;
         
     } while(0);
         
-    return result;
+    return pkey;
 }
 
 /* msg: sha-256-digest, mlen: 256 / 8, pkey: RSA Key */
-int
-sign_it_pkcs1(const unsigned char* msg, size_t mlen, unsigned char** sig, size_t* slen, EVP_PKEY* pkey)
+unsigned char*
+sign_it_pkcs1(const unsigned char* msg, size_t mlen, size_t* slen, EVP_PKEY* pkey)
 {
-     EVP_PKEY_CTX *ctx;
+     EVP_PKEY_CTX *ctx = NULL;
+     unsigned char *sig = NULL;
      
      ctx = EVP_PKEY_CTX_new(pkey, NULL);
      if (!ctx) {
-         return -1;
+         goto end;
      }
      
      if (EVP_PKEY_sign_init(ctx) <= 0) {
-         return -1;
+         goto end;
      }
  
      if (EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_PADDING) <= 0) {
-         return -1;
+         goto end;
      }
  
      if (EVP_PKEY_CTX_set_signature_md(ctx, EVP_sha256()) <= 0) {
-         return -1;
+         goto end;
      }
  
      if (EVP_PKEY_sign(ctx, NULL, slen, msg, mlen) <= 0) {
-         return -1;
+         goto end;
      }
 
-     *sig = OPENSSL_malloc(*slen);
+     sig = OPENSSL_malloc(*slen);
 
-     if (*sig == NULL) {
-         return -1;
+     if (sig == NULL) {
+         goto end;
      }
 
-     if (EVP_PKEY_sign(ctx, *sig, slen, msg, mlen) <= 0) {
-         return -1;
+     if (EVP_PKEY_sign(ctx, sig, slen, msg, mlen) <= 0) {
+         OPENSSL_free(sig);
+         sig = NULL;
+         goto end;
      }
 
+ end:
      if (ctx) {
          EVP_PKEY_CTX_free(ctx);
-         ctx = NULL;
      }
 
-     return 0;
+     return sig;
+}
+
+unsigned char*
+rsa_sha256_sign(unsigned char *rsa_key, unsigned char *msg, size_t mlen, size_t *slen)
+{
+    if (!msg || mlen <= 0) {
+        return NULL;
+    }
+
+    RSA *rsa = NULL;
+    EVP_PKEY *skey = NULL;
+    unsigned char *sig = NULL;
+    
+    unsigned char *sha_digest = SHA256((unsigned char*)msg, mlen, NULL);
+        
+    rsa = createRSA(rsa_key, 0);
+
+    if (!rsa) {
+        goto end;
+    }
+
+    skey = make_key(rsa);
+
+    if (!skey) {
+        goto end;
+    }
+
+    sig = sign_it_pkcs1(sha_digest, SHA256_DIGEST_LENGTH, slen, skey);
+    
+ end:
+    if (rsa) {
+        RSA_free(rsa);
+    }
+
+    if (skey) {
+        EVP_PKEY_free(skey);        
+    }
+
+    return sig;
 }
 
 int
 main()
 {
     const char* msg = "helloworld";
-    unsigned char *digest = SHA256((unsigned char*)msg, strlen(msg), NULL);
-    printf("SHA-256: ");
+    size_t siglen;
     
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-        printf("%02x", digest[i]);
+    unsigned char* sig = rsa_sha256_sign(key_str, msg, (size_t)strlen(msg), &siglen);
+    if (!sig) {
+        printf("cannot sign\n");
+        return 0;
     }
-
-    printf("\n");
-    size_t siglen = 0;
-    unsigned char *sig = NULL;
-    EVP_PKEY *skey = NULL;
-    RSA *rsa = createRSA((unsigned char*)key_str, 0);
-
-    if (!rsa) {
-        exit(1);
-    }
-
-    if (make_key(&skey, rsa) != 0) {
-        exit(1);
-    }
-
-    int n;
-    n = sign_it_pkcs1(digest, SHA256_DIGEST_LENGTH, &sig, &siglen, skey);
     
-    if (n != 0) {
-        printf("sign failed %d.", n);
-    }
-
-    printf("RSA-SHA256-PKCS1# v1.5: ");
+    printf("%d\n", siglen);     
     for (int i = 0; i < siglen; i++) {
         printf("%02x", sig[i]);
     }
@@ -189,15 +199,6 @@ main()
 
     if (sig) {
         OPENSSL_free(sig);
-    }
-    
-    if (skey) {
-        EVP_PKEY_free(skey);
-    }
-     
-    if (rsa) {
-        RSA_free(rsa);
-        rsa = NULL;
     }
 
     return 0;
